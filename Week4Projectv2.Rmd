@@ -1,0 +1,352 @@
+---
+title: "Week4Project"
+output: html_document
+---
+
+```{r setup, include=FALSE,warning=F,message=F}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(caret)
+```
+
+###Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of this project is to predict the manner in which the exercise was carried out (the classe variable). This report will describe:
+
+* How the model was built 
+* How cross validation was used 
+* What the expected out of sample error is
+* Why the model choices were made 
+
+The model will be used to predict on 20 test cases. 
+
+The key components of the predictor for this project are:
+
+* Question
+* Input Data
+* Features
+* Algorithm
+* Parameters
+* Evaluation
+
+###Exploratory Data Analysis
+
+The question we are seeking to answer is:
+
+Can we use quantitative accelerometer data to classify barbell lifts into different classes?
+
+The classes under consideration are:
+
+* Exactly according to the specification (Class A)
+* Throwing the elbows to the front (Class B)
+* Lifting the dumbbell only halfway (Class C)
+* Lowering the dumbbell only halfway (Class D)
+* Throwing the hips to the front (Class E)
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz4xNVgCOCd
+
+The data provided is from accelerometers attached to the belt, forearm, arm, and dumbell of 6 participants. For each accelerometer several variables were recorded. These will be used as the features for the machine learning models. 
+
+Read in the data
+
+```{r echo=F,warning=F,message=F}
+training <- read.csv("/Users/joanna.s.mclenaghan/Documents/Training/Coursera - Data Science/Practical Machine Learning/pml-training.csv")
+testing <- read.csv("/Users/joanna.s.mclenaghan/Documents/Training/Coursera - Data Science/Practical Machine Learning/pml-testing.csv")
+```
+
+Check the dimensions of the training and testing data sets, the names of the variables and the proportion of the rows in each "classe" in the training data.
+
+```{r,warning=F,message=F}
+dim(training)
+dim(testing)
+
+names(training)
+names(training)[!(names(training) %in% names(testing))]
+names(testing)[!(names(testing) %in% names(training))]
+
+training_table <- data.frame(table(training$classe))
+names(training_table)[1] <- "Classe"
+#Plot a bar graph of the spread of classes for the original training data
+b <- ggplot(training_table,aes(Classe,Freq))
+b <- b + geom_bar(stat="identity",aes(fill=Classe),position="dodge")
+b <- b + xlab("Classe") + ylab("Count") +
+  ggtitle("Training data spread of classes") +
+  theme_bw()
+b
+```
+
+The training set has the variable classe i.e. the target variable. The testing set does not have this variable but it does have a variable "problem_id".
+
+There are several variables in the training set which will not be used for training the models (e.g. timestamps, row numbers, user name and window details). We will remove these now as they will not be useful for building a generalised classification model.
+
+```{r,warning=F,message=F}
+training2 <- dplyr::select(training,-X,-user_name,-raw_timestamp_part_1,-raw_timestamp_part_2,-cvtd_timestamp,-new_window,-num_window)
+testing2 <- dplyr::select(testing,-X,-user_name,-raw_timestamp_part_1,-raw_timestamp_part_2,-cvtd_timestamp,-new_window,-num_window)
+```
+
+We will also convert all values in the training and testing sets to numeric then check the number of NA values in each column.
+
+```{r,warning=F,message=F}
+training2[,1:(ncol(training2)-1)] <- apply(training2[,1:(ncol(training2)-1)],2,as.character)
+training2[,1:(ncol(training2)-1)] <- apply(training2[,1:(ncol(training2)-1)],2,as.numeric)
+checkNA_training <- data.frame(colSums(is.na(training2)))
+
+testing2[,1:(ncol(testing2)-1)] <- apply(testing2[,1:(ncol(testing2)-1)],2,as.character)
+testing2[,1:(ncol(testing2)-1)] <- apply(testing2[,1:(ncol(training2)-1)],2,as.numeric)
+checkNA_testing <- data.frame(colSums(is.na(testing2)))
+```
+
+By looking at the values in checkNA we can see that there are several columns with almost all values NA. We will remove these columns as they will not be useful in the model training. We will also remove the same columns from the test data set as they will not be used in the model. 
+
+```{r,warning=F,message=F}
+#Keep only columns with <10% NA
+training2 <- training2[,colSums(is.na(training2))<0.1*nrow(training2)]
+testing2 <- testing2[,c(which(colnames(testing2) %in% colnames(training2)),ncol(testing2))]
+
+#Clean up
+rm(checkNA_training,checkNA_testing)
+```
+
+###Create Training, Testing and Validation Sub-sets
+
+To start with we will split the data into three sets:
+
+* Training - 60% - to train various models
+* Testing - 20% - to test the different models against each other
+* Validation - 20% - for a final estimate of out of sample error
+
+In this project we will use the misclassification rate as the error metric. For simplicity we will weight all misclassifications equally. In a future project it would be possible to apply different weights e.g. to apply a higher misclassfication error weight if any of the incorrect method classes (B-E) are mistaken for the correct method class (A).
+
+
+```{r,warning=F,message=F}
+#Split into training and testing/validation data sets
+ids <- createDataPartition(y=training2$classe,p=0.6,list=F)
+trainData <- training2[ids,]
+testValData <- training2[-ids,]
+
+#Split again into testing and validation data sets
+ids2 <- createDataPartition(y=testValData$classe,p=0.5,list = F)
+testData <- testValData[ids2,]
+valData <- testValData[-ids,]
+
+#Clean up
+rm(ids,ids2,testValData)
+```
+
+###Modelling
+
+There are many models that can be used for classification. In this case we are more concerned with accuracy compared to interpretability. Also, as the models will only need to be run once (rather than on an ongoing/repeated basis) speed of training/testing and scalability are of lesser importance. 
+
+WWe will use k-fold cross validation in the model training. We have to be careful chosing k as a larger k will lead to more variance and a smaller k will lead to more bias. These effects must be balanced.
+
+We will try the following models to fit the data. 
+
+* rf - Random forest
+* gbm - boosting with trees
+* linear discriminant analysis
+* Naive Bayes
+* Neural Net
+
+We will pick the top performers and the experiment further using pre-processing techniques and varying the cross validation number of folds. Finally we will create an ensemble of the top two models. 
+
+####Training the Models
+
+For training and predicting we will use the caret package. The built in functionality will make the modelling simpler. 
+
+First we train and predict using all selected models. 
+
+```{r, cache=T,warning=F,message=F}
+set.seed(1264)
+
+#Models with no pre-processing
+fit_rpart <- train(classe ~., data=trainData,method="rpart",trControl=trainControl(method="cv"))
+fit_gbm <- train(classe ~., data=trainData,method="gbm",trControl=trainControl(method="cv"),verbose=FALSE)
+fit_lda <- train(classe ~., data=trainData,method="lda",trControl=trainControl(method="cv"))
+fit_nb <- train(classe ~., data=trainData,method="nb",trControl=trainControl(method="cv"))
+fit_nn <- train(classe ~. ,data=trainData,method="nnet",trControl=trainControl(method="cv"),trace=FALSE)
+
+#Put all of the models into a list
+fit_list1 <- list(fit_rpart,fit_gbm,fit_lda,fit_nb,fit_nn)
+names(fit_list1) <- c("fit_rpart","fit_gbm","fit_lda","fit_nb","fit_nn")
+```
+
+For each model predict using the test data set. 
+
+```{r,warning=F,message=F}
+pred_list1 <- list()
+
+for(f in 1:length(fit_list1)) {
+  pred_list1[[length(pred_list1)+1]] <- as.character(predict(fit_list1[[f]],newdata=testData))
+}
+
+names(pred_list1) <- c("pred_rpart","pred_gbm","pred_lda","pred_nb","pred_nn")
+```
+
+For each prediction, find the model accuracy. 
+
+```{r,warning=F,message=F}
+all_results1 <- data.frame("Model"=NA,"Accuracy"=NA)
+for(p in 1:length(pred_list1)) {
+  conf <- confusionMatrix(pred_list1[[p]],as.character(testData$classe))
+  print(paste(names(pred_list1)[p],":",conf$overall[1]))
+  all_results1 <- rbind(all_results1,c(names(pred_list1)[p],conf$overall[1]))
+}
+all_results1 <- all_results1[-1,]
+all_results1 <- all_results1[order(desc(all_results1$Accuracy)),]
+```
+
+The best results are from the gbm, naive bayes and linear discriminant analysis. 
+
+We will now use these three models and try preprocessing the data to centre, scale and use PCA. This will reduce the interpretability of the results but as discussed above, this is of secondary importance compared to accuracy in this case. 
+
+We will also experiment with different folds in the cross validation.
+
+```{r, cache=T,warning=F,message=F}
+set.seed(1264)
+
+#Create a list to hold all of the models
+fit_list2 <- list(fit_gbm,fit_lda,fit_nb)
+
+#Loop through different numbers of folds for cross validation
+for(n in c(10,5)) {
+  print(n)
+  if(n!=10) {
+        #Models with no pre-processing - we have already run this for n=10
+      fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="gbm",trControl=trainControl(method="cv",number=n),verbose=FALSE)
+      fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="lda",trControl=trainControl(method="cv",number=n))
+      fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="nb",trControl=trainControl(method="cv",number=n))
+  }
+  print("Finished: No Pre-processing")
+
+  #Models using PCA, centering and scaling
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="gbm",preProcess=c("center","scale","pca"),trControl=trainControl(method="cv",number=n),verbose=FALSE)
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="lda",preProcess=c("center","scale","pca"),trControl=trainControl(method="cv",number=n))
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="nb",preProcess=c("center","scale","pca"),trControl=trainControl(method="cv",number=n))
+  print("Finished: All Pre-processing")
+  
+  #Models using only PCA
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="gbm",preProcess=c("pca"),trControl=trainControl(method="cv",number=n),verbose=FALSE)
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="lda",preProcess=c("pca"),trControl=trainControl(method="cv",number=n))
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="nb",preProcess=c("pca"),trControl=trainControl(method="cv",number=n))
+  print("Finished: PCA only")
+  
+  #Models using only centering and scaling
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="gbm",preProcess=c("center","scale"),trControl=trainControl(method="cv",number=n),verbose=FALSE)
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="lda",preProcess=c("center","scale"),trControl=trainControl(method="cv",number=n))
+  fit_list2[[length(fit_list2)+1]] <- train(classe ~., data=trainData,method="nb",preProcess=c("center","scale"),trControl=trainControl(method="cv",number=n))
+  print("Finished: Centering and Scaling only")
+}
+
+
+names(fit_list2) <- c("fit_gbm","fit_lda","fit_nb","fit_gbm_allPP","fit_lda_allPP","fit_nb_allPP","fit_gbm_PCA","fit_lda_PCA","fit_nb_PCA","fit_gbm_CS","fit_lda_CS","fit_nb_CS","fit_gbm_5","fit_lda_5","fit_nb_5","fit_gbm_allPP_5","fit_lda_allPP_5","fit_nb_allPP_5","fit_gbm_PCA_5","fit_lda_PCA_5","fit_nb_PCA_5","fit_gbm_CS_5","fit_lda_CS_5","fit_nb_CS_5")
+```
+
+For each model predict using the test data set. 
+
+```{r,warning=F,message=F}
+pred_list2 <- list()
+
+for(f in 1:length(fit_list2)) {
+  pred_list2[[length(pred_list2)+1]] <- as.character(predict(fit_list2[[f]],newdata=testData))
+}
+
+names(pred_list2) <- c("pred_gbm","pred_lda","pred_nb","pred_gbm_allPP","pred_lda_allPP","pred_nb_allPP","pred_gbm_PCA","pred_lda_PCA","pred_nb_PCA","pred_gbm_CS","pred_lda_CS","pred_nb_CS","pred_gbm_5","pred_lda_5","pred_nb_5","pred_gbm_allPP_5","pred_lda_allPP_5","pred_nb_allPP_5","pred_gbm_PCA_5","pred_lda_PCA_5","pred_nb_PCA_5","pred_gbm_CS_5","pred_lda_CS_5","pred_nb_CS_5")
+```
+
+For each prediction, find the model accuracy. 
+
+```{r,warning=F,message=F}
+all_results2 <- data.frame("Model"=NA,"Accuracy"=NA)
+for(p in 1:length(pred_list2)) {
+  conf <- confusionMatrix(pred_list2[[p]],as.character(testData$classe))
+  all_results2 <- rbind(all_results2,c(names(pred_list2)[p],conf$overall[1]))
+}
+all_results2 <- all_results2[-1,]
+all_results2$Accuracy <- as.numeric(all_results2$Accuracy)
+all_results2 <- all_results2[order(desc(all_results2$Accuracy)),]
+print(all_results2)
+```
+
+The best results for the three different models are:
+
+* gbm model: 10 folds with centering and scaling
+* naive bayes model: 10 folds with no pre-processing
+* lda model: 10 folds with no pre-processing 
+
+We will now use these in a majority vote to try and improve the accuracy further.  
+
+```{r,warning=F,message=F}
+allPred <- data.frame(do.call("cbind",pred_list2),stringsAsFactors = F)
+names(allPred) <- names(pred_list2)
+allPred <- allPred[,which(names(allPred) %in% c("pred_gbm_5","pred_nb_CS","pred_lda"))]
+
+#Use a majority vote to create a new prediction
+#If each has a different classe then use the gbm model result as this had the highest individual model accuracy
+allPred$Majority <- ifelse(allPred$pred_lda==allPred$pred_nb_CS,allPred$pred_lda,ifelse(allPred$pred_lda==allPred$pred_gbm_5,allPred$pred_lda,ifelse(allPred$pred_nb_CS==allPred$pred_gbm_5,allPred$pred_nb_CS,allPred$pred_gbm_5)))
+
+#Check the accuracy of the combined predictions
+conf <- confusionMatrix(allPred$Majority,testData$classe)
+print(paste("Combined Models",":",conf$overall[1]))
+```
+
+The combined model has an accuracy of 0.89 which is worse than the best individual model (gbm). 
+
+The accuracy from the test set may be overly optimistic due to overfitting. Therefore we will use the validation data set to compare the top individual models and the ensemble model. 
+
+```{r,warning=F,message=F}
+#Final prediction using the validation data set
+#Predict using the top three individual models and the ensemble model
+
+val_pred1 <- as.character(predict(fit_list2[[which(names(fit_list2) %in% "fit_gbm_5")]],valData))
+val_pred2 <- as.character(predict(fit_list2[[which(names(fit_list2) %in% "fit_nb_CS")]],valData))
+val_pred3 <- as.character(predict(fit_list2[[which(names(fit_list2) %in% "fit_lda")]],valData))
+
+#Combine and find the majority vote
+combo_val <- data.frame("gbm"=val_pred1,"nb"= val_pred2,"lda"=val_pred3,stringsAsFactors = F)
+combo_val$majority_vote <- ifelse(combo_val$lda==combo_val$nb,combo_val$lda,ifelse(combo_val$lda==combo_val$gbm,combo_val$lda,ifelse(combo_val$nb==combo_val$gbm,combo_val$nb,combo_val$gbm)))
+
+combo_val$actual <- valData$classe
+
+#Calculate the accuracy for each model
+val_results <- data.frame("Model"=NA,"Accuracy"=NA)
+for(p in 1:(ncol(combo_val)-1)) {
+  conf <- confusionMatrix(combo_val[,p],as.character(combo_val$actual))
+  print(paste(names(combo_val)[p],":",round(conf$overall[1],2)))
+  val_results <- rbind(val_results,c(names(combo_val)[p],conf$overall[1]))
+}
+val_results <- val_results[-1,]
+
+#Plot the predictions from each model - use jitter
+p1 <- qplot(actual,gbm,data=combo_val,geom = c("jitter"),colour=actual,main = "GBM Predictions",ylab="Model Predictions",xlab="Actual Classes")
+p2 <- qplot(actual,nb,data=combo_val,geom = c("jitter"),colour=actual,main = "Naive Bayes Predictions",ylab="Model Predictions",xlab="Actual Classes")
+p3 <- qplot(actual,lda,data=combo_val,geom = c("jitter"),colour=actual,main = "LDA Predictions",ylab="Model Predictions",xlab="Actual Classes")
+p4 <- qplot(actual,majority_vote,data=combo_val,geom = c("jitter"),colour=actual,main = "Majority Vote Predictions",ylab="Model Predictions",xlab="Actual Classes")
+grid.arrange(p1,p2,p3,p4, ncol=2,nrow=2)
+```
+
+The best model results from the validation set are from using the gbm model so this will be the model used for the "blind" data predictions. 
+
+###Predicting using the blind data
+
+Predict on the test data set with unknown classe. 
+
+```{r,warning=F,message=F}
+blind_results <- as.character(predict(fit_list2[[which(names(fit_list2) %in% "fit_gbm_5")]],testing2[,-ncol(testing2)]))
+
+blind_table <- data.frame(table(blind_results))
+names(blind_table)[1] <- "Classe"
+
+#Plot a bar graph of the spread of classes for the blind predictions
+b <- ggplot(blind_table,aes(Classe,Freq))
+b <- b + geom_bar(stat="identity",aes(fill=Classe),position="dodge")
+b <- b + xlab("Classe") + ylab("Count") +
+  ggtitle("Blind data spread of predicted classes") +
+  theme_bw()
+b
+```
